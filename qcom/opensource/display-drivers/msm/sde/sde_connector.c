@@ -1060,7 +1060,8 @@ static void sde_connector_pre_update_fod_hbm(struct sde_connector *c_conn)
 		qcom_dcvs_bus_boost_kick_max(500);
 }
 
-	dsi_panel_set_fod_hbm(panel, status);
+	if (!panel->hbm_enabled)
+		dsi_panel_set_fod_hbm(panel, status);
 	dsi_panel_set_fod_ui(panel, status);
 }
 
