@@ -80,7 +80,6 @@ struct sde_fence_context {
 	u64 context;
 	struct sde_fence_error_ctx sde_fence_error_ctx;
 	struct list_head fence_list_head;
-	char name[SDE_FENCE_NAME_SIZE];
 };
 
 /**
