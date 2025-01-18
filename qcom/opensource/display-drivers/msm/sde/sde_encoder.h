@@ -274,6 +274,7 @@ struct sde_encoder_virt {
 	struct kthread_work input_event_work;
 	struct kthread_work esd_trigger_work;
 	struct input_handler *input_handler;
+	bool input_handler_registered;
 	bool vblank_enabled;
 	bool idle_pc_restore;
 	bool restore_te_rd_ptr;
