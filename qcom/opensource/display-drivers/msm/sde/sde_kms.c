@@ -1084,23 +1084,59 @@ static struct drm_crtc *sde_kms_vm_get_vm_crtc(
 	return vm_crtc;
 }
 
-static void _sde_kms_update_pm_qos_irq_request(struct sde_kms *sde_kms, bool enable)
+static void _sde_kms_update_pm_qos_irq_request(struct sde_kms *sde_kms, const cpumask_t *mask)
 {
+	struct device *cpu_dev;
+	int cpu = 0;
 	u32 cpu_irq_latency = sde_kms->catalog->perf.cpu_irq_latency;
 
-	if (!sde_kms->irq_num)
+	// save irq cpu mask
+	sde_kms->irq_cpu_mask = *mask;
+	if (cpumask_empty(&sde_kms->irq_cpu_mask)) {
+		SDE_DEBUG("%s: irq_cpu_mask is empty\n", __func__);
 		return;
+	}
 
-	if (enable) {
-		if (cpu_latency_qos_request_active(&sde_kms->pm_qos_irq_req)) {
-			cpu_latency_qos_update_request(&sde_kms->pm_qos_irq_req, cpu_irq_latency);
-		} else {
-			sde_kms->pm_qos_irq_req.irq = sde_kms->irq_num;
-			sde_kms->pm_qos_irq_req.type = PM_QOS_REQ_AFFINE_IRQ;
-			cpu_latency_qos_add_request(&sde_kms->pm_qos_irq_req, cpu_irq_latency);
+	for_each_cpu(cpu, &sde_kms->irq_cpu_mask) {
+		cpu_dev = get_cpu_device(cpu);
+		if (!cpu_dev) {
+			SDE_DEBUG("%s: failed to get cpu%d device\n", __func__,
+				cpu);
+			continue;
 		}
-	} else if (cpu_latency_qos_request_active(&sde_kms->pm_qos_irq_req)) {
-		cpu_latency_qos_update_request(&sde_kms->pm_qos_irq_req, PM_QOS_CPU_LATENCY_DEFAULT_VALUE);
+
+		if (dev_pm_qos_request_active(&sde_kms->pm_qos_irq_req[cpu]))
+			dev_pm_qos_update_request(&sde_kms->pm_qos_irq_req[cpu],
+					cpu_irq_latency);
+		else
+			dev_pm_qos_add_request(cpu_dev,
+				&sde_kms->pm_qos_irq_req[cpu],
+				DEV_PM_QOS_RESUME_LATENCY,
+				cpu_irq_latency);
+	}
+}
+
+static void _sde_kms_remove_pm_qos_irq_request(struct sde_kms *sde_kms, const cpumask_t *mask)
+{
+	struct device *cpu_dev;
+	int cpu = 0;
+
+	if (cpumask_empty(mask)) {
+		SDE_DEBUG("%s: irq_cpu_mask is empty\n", __func__);
+		return;
+	}
+
+	for_each_cpu(cpu, mask) {
+		cpu_dev = get_cpu_device(cpu);
+		if (!cpu_dev) {
+			SDE_DEBUG("%s: failed to get cpu%d device\n", __func__,
+				cpu);
+			continue;
+		}
+
+		if (dev_pm_qos_request_active(&sde_kms->pm_qos_irq_req[cpu]))
+			dev_pm_qos_remove_request(
+					&sde_kms->pm_qos_irq_req[cpu]);
 	}
 }
 
@@ -1141,7 +1177,7 @@ int sde_kms_vm_primary_prepare_commit(struct sde_kms *sde_kms,
 	if (sde_kms->hw_intr && sde_kms->hw_intr->ops.clear_all_irqs)
 		sde_kms->hw_intr->ops.clear_all_irqs(sde_kms->hw_intr);
 
-	_sde_kms_update_pm_qos_irq_request(sde_kms, false);
+	_sde_kms_remove_pm_qos_irq_request(sde_kms, &CPU_MASK_ALL);
 
 	/* enable the display path IRQ's */
 	drm_for_each_encoder_mask(encoder, crtc->dev,
@@ -1435,7 +1471,7 @@ int sde_kms_vm_pre_release(struct sde_kms *sde_kms,
 
 	if (is_primary) {
 
-		_sde_kms_update_pm_qos_irq_request(sde_kms, true);
+		_sde_kms_update_pm_qos_irq_request(sde_kms, &CPU_MASK_ALL);
 		/* disable vblank events */
 		drm_crtc_vblank_off(crtc);
 
@@ -4549,13 +4585,39 @@ void sde_kms_cpu_vote_for_irq(struct sde_kms *sde_kms, bool enable)
 
 	mutex_lock(&priv->phandle.phandle_lock);
 
-	if (enable && atomic_inc_return(&sde_kms->irq_vote_count) == 1) {
-		_sde_kms_update_pm_qos_irq_request(sde_kms, true);
-	} else if (!enable && atomic_dec_return(&sde_kms->irq_vote_count) == 0) {
-		_sde_kms_update_pm_qos_irq_request(sde_kms, false);
-	}
+	if (enable && atomic_inc_return(&sde_kms->irq_vote_count) == 1)
+		_sde_kms_update_pm_qos_irq_request(sde_kms, &sde_kms->irq_cpu_mask);
+	else if (!enable && atomic_dec_return(&sde_kms->irq_vote_count) == 0)
+		_sde_kms_remove_pm_qos_irq_request(sde_kms, &sde_kms->irq_cpu_mask);
+
 	mutex_unlock(&priv->phandle.phandle_lock);
 }
+
+static void sde_kms_irq_affinity_notify(
+		struct irq_affinity_notify *affinity_notify,
+		const cpumask_t *mask)
+{
+	struct msm_drm_private *priv;
+	struct sde_kms *sde_kms = container_of(affinity_notify,
+					struct sde_kms, affinity_notify);
+
+	if (!sde_kms || !sde_kms->dev || !sde_kms->dev->dev_private)
+		return;
+
+	priv = sde_kms->dev->dev_private;
+
+	mutex_lock(&priv->phandle.phandle_lock);
+
+	_sde_kms_remove_pm_qos_irq_request(sde_kms, &sde_kms->irq_cpu_mask);
+
+	// request vote with updated irq cpu mask
+	if (atomic_read(&sde_kms->irq_vote_count))
+		_sde_kms_update_pm_qos_irq_request(sde_kms, mask);
+
+	mutex_unlock(&priv->phandle.phandle_lock);
+}
+
+static void sde_kms_irq_affinity_release(struct kref *ref) {}
 
 static void sde_kms_handle_power_event(u32 event_type, void *usr)
 {
@@ -5144,7 +5206,7 @@ static int sde_kms_hw_init(struct msm_kms *kms)
 	struct drm_device *dev;
 	struct msm_drm_private *priv;
 	struct platform_device *platformdev;
-	int rc = -EINVAL;
+	int irq_num, rc = -EINVAL;
 
 	if (!kms) {
 		SDE_ERROR("invalid kms\n");
@@ -5194,6 +5256,13 @@ static int sde_kms_hw_init(struct msm_kms *kms)
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 19, 0))
 	dev->mode_config.allow_fb_modifiers = true;
 #endif
+
+	sde_kms->affinity_notify.notify = sde_kms_irq_affinity_notify;
+	sde_kms->affinity_notify.release = sde_kms_irq_affinity_release;
+
+	irq_num = platform_get_irq(to_platform_device(sde_kms->dev->dev), 0);
+	SDE_DEBUG("Registering for notification of irq_num: %d\n", irq_num);
+	irq_set_affinity_notifier(irq_num, &sde_kms->affinity_notify);
 
 	if (sde_in_trusted_vm(sde_kms)) {
 		rc = sde_vm_trusted_init(sde_kms);
