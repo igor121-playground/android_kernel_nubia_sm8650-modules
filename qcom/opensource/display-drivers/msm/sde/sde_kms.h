@@ -297,8 +297,10 @@ struct sde_kms {
 	bool pm_suspend_clk_dump;
 	bool freeze_late;
 
+	cpumask_t irq_cpu_mask;
 	atomic_t irq_vote_count;
-	struct pm_qos_request pm_qos_irq_req;
+	struct dev_pm_qos_request pm_qos_irq_req[NR_CPUS];
+	struct irq_affinity_notify affinity_notify;
 
 	struct sde_vm *vm;
 
