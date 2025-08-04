@@ -919,6 +919,8 @@ struct drm_atomic_state *msm_atomic_state_alloc(struct drm_device *dev)
 	s->allow_modeset = true;
 	s->crtcs = state->crtcs;
 	s->planes = state->planes;
+        if (dev)
+                kref_get(&dev->ref);
 	s->dev = dev;
 
 init_commit_work:
