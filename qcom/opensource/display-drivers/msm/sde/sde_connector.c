@@ -15,6 +15,8 @@
 #include <linux/backlight.h>
 #include <linux/string.h>
 #include <linux/file.h>
+#include <linux/cpu_boost.h>
+#include <soc/qcom/dcvs_boost.h>
 #include "dsi_drm.h"
 #include "dsi_display.h"
 #include "sde_crtc.h"
@@ -1052,8 +1054,11 @@ static void sde_connector_pre_update_fod_hbm(struct sde_connector *c_conn)
 	if (status == dsi_panel_get_fod_ui(panel))
 		return;
 
-	if (status)
+	if (status) {
 		sde_encoder_wait_for_event(c_conn->encoder, MSM_ENC_VBLANK);
+                cpu_boost_max(500);
+		qcom_dcvs_bus_boost_kick_max(500);
+}
 
 	dsi_panel_set_fod_hbm(panel, status);
 	dsi_panel_set_fod_ui(panel, status);
