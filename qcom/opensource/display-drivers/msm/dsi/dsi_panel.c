@@ -746,6 +746,22 @@ static int dsi_panel_set_hbm(struct dsi_panel *panel, bool status)
 	return __dsi_panel_set_hbm(panel, panel->fod_hbm_enabled, status);
 }
 
+static int dsi_panel_set_hbm_locked(struct dsi_panel *panel)
+{
+	int rc = 0;
+
+	rc = dsi_panel_set_hbm(panel, false);
+	if (rc)
+		goto exit;
+
+	rc = dsi_panel_set_hbm(panel, true);
+	if (rc)
+		goto exit;
+
+exit:
+	return rc;
+}
+
 int dsi_panel_set_fod_hbm(struct dsi_panel *panel, bool status)
 {
 	return __dsi_panel_set_hbm(panel, status, panel->hbm_enabled);
@@ -5367,6 +5383,12 @@ int dsi_panel_post_enable(struct dsi_panel *panel)
 		DSI_ERR("[%s] failed to send DSI_CMD_SET_POST_ON cmds, rc=%d\n",
 		       panel->name, rc);
 		goto error;
+	}
+
+	if (panel->hbm_enabled) {
+		mutex_unlock(&panel->panel_lock);
+		rc = dsi_panel_set_hbm_locked(panel);
+		return rc;
 	}
 error:
 	mutex_unlock(&panel->panel_lock);
